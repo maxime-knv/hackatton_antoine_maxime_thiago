@@ -11,16 +11,115 @@
 - ⚡ **Repérer les erreurs récurrentes** : filtrez par match, quart-temps, down & distance, passeur, receveur ; le tableau classe chaque passe en *Meilleur coup / Bon coup / Erreur / Gaffe*.
 - 🏃 **Estimer le gain potentiel** : le *YAC Potential* dit combien de yards le receveur peut espérer **après** la réception.
 
-## 🚀 Quick Start
+## 📦 Installation
+
+**Prérequis** : Python 3.10+ (testé en 3.12), `git`, ~1 Go de disque pour les données.
+
+### 1. Récupérer le projet
 
 ```bash
-python -m venv .venv && source .venv/bin/activate     # Windows : .venv\Scripts\activate
-pip install -r requirements.txt
-streamlit run app.py                                  # → http://localhost:8501
+git clone git@github.com:maxime-knv/hackatton_antoine_maxime_thiago.git
+cd hackatton_antoine_maxime_thiago
 ```
 
-- Python 3.10+ (testé en 3.12). Les CSV du Big Data Bowl doivent être dans `data/` (`games`, `plays`, `players`, `pffScoutingData`, `tracking/`) — ou pointez-les avec `NFL_DATA_DIR=/chemin/vers/data`.
-- Tests : `pytest` · Recalibrage du modèle : `python scripts/calibrate.py`
+### 2. Environnement et dépendances
+
+```bash
+# Linux / macOS
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+```powershell
+# Windows (PowerShell)
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+### 3. Données
+
+Les CSV du [Big Data Bowl 2023](https://www.kaggle.com/competitions/nfl-big-data-bowl-2023/data) doivent se trouver dans `data/` :
+
+```
+data/
+├── games.csv
+├── plays.csv
+├── players.csv
+├── pffScoutingData.csv
+└── tracking/            # tracking_2021090900.csv, tracking_2021091200.csv, ...
+```
+
+Données ailleurs sur la machine ? Indiquez le dossier :
+
+```bash
+export NFL_DATA_DIR=/chemin/vers/data      # Windows : set NFL_DATA_DIR=C:\chemin\vers\data
+```
+
+## 🚀 Lancer le projet
+
+```bash
+source .venv/bin/activate        # si l'environnement n'est pas déjà actif
+streamlit run app.py             # → http://localhost:8501
+```
+
+Autres commandes utiles :
+
+```bash
+streamlit run app.py --server.port 8080                 # changer de port
+streamlit run app.py --server.address 0.0.0.0           # accessible depuis le réseau local
+pytest                                                  # lancer les 50 tests
+python scripts/calibrate.py                             # recalibrer le modèle YAC Potential
+python scripts/fetch_headshots.py                       # régénérer les photos des joueurs
+```
+
+## ☁️ Déploiement
+
+L'app lit **826 Mo de CSV** au démarrage : le choix de l'hébergeur dépend surtout de la place des données.
+
+| Option | Données | Quand l'utiliser |
+|---|---|---|
+| **Docker sur un serveur / VPS** (recommandé) | volume monté, hors image | démo stable, contrôle total |
+| **Hugging Face Spaces** (SDK Docker ou Streamlit) | dataset HF ou Git LFS | gratuit, simple à partager |
+| **Streamlit Community Cloud** | dans le dépôt GitHub (limite 100 Mo/fichier, ~1 Go/repo) | uniquement avec un sous-ensemble des matchs |
+
+### Option A — Docker (recommandé)
+
+Créez un `Dockerfile` à la racine :
+
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+ENV NFL_DATA_DIR=/data
+EXPOSE 8501
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+```
+
+Puis, avec un `.dockerignore` contenant `data/`, `.venv/`, `.git/`, `__pycache__/` :
+
+```bash
+docker build -t yac-tracker .
+docker run -d --name yac-tracker -p 8501:8501 -v "$(pwd)/data:/data:ro" --restart unless-stopped yac-tracker
+# → http://IP_DU_SERVEUR:8501
+```
+
+Pour un nom de domaine en HTTPS, placez un reverse proxy (Caddy, par exemple : `caddy reverse-proxy --from demo.exemple.fr --to localhost:8501`). Streamlit utilise des WebSockets : le proxy doit les laisser passer (Caddy et nginx avec `Upgrade` le font).
+
+### Option B — Streamlit Community Cloud (démo allégée)
+
+1. Gardez dans `data/` un sous-ensemble (quelques fichiers `tracking_*.csv` + `games`, `plays`, `players`, `pffScoutingData`) pour rester sous les limites GitHub, ou passez par Git LFS.
+2. Poussez sur GitHub : `git push origin main`.
+3. Sur [share.streamlit.io](https://share.streamlit.io) → **New app** → choisissez le dépôt, la branche `main` et le fichier `app.py` → **Deploy**.
+
+### Option C — Hugging Face Spaces
+
+Créez un Space (SDK **Docker**), ajoutez le `Dockerfile` ci-dessus avec `EXPOSE 7860` et `--server.port=7860`, hébergez les CSV dans un dataset HF et téléchargez-les au build (`huggingface-cli download`) ou au démarrage vers `NFL_DATA_DIR`.
+
+> ⚠️ Les données du Big Data Bowl sont soumises aux conditions de la compétition Kaggle : vérifiez que leur republication publique est autorisée avant de les mettre dans un dépôt ou un Space public.
 
 ## 🖱️ Utilisation
 
