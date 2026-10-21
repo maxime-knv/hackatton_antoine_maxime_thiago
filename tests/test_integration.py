@@ -80,3 +80,12 @@ def test_field_orientation_matches_the_play_description(tables):
 
 def test_verdict_thresholds_are_ordered():
     assert C.DANGER_SEP < C.COVERED_SEP < C.OPEN_SEP
+
+
+def test_player_page_embeds_every_frame_with_stable_traces(game):
+    from tracker.player import build_player_html, player_height
+    a = next(iter(game.plays.values()))
+    page = build_player_html(a, int(a.frames[a.release_idx]))
+    assert page.count('"fieldFrames"') == 1 and "Plotly.restyle" in page and player_height(a) > 400
+    figures = [build_field_figure(a, i, True) for i in (0, a.release_idx, a.last_idx)]
+    assert len({len(f.data) for f in figures}) == 1          # même nombre de traces à chaque image

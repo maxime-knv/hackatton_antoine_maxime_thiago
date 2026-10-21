@@ -9,10 +9,8 @@
 """
 from __future__ import annotations
 
-import time
 from functools import partial
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -20,7 +18,7 @@ from tracker import config as C
 from tracker.analysis import GameAnalysis, PlayAnalysis, analyze_game, key_events
 from tracker.data import Tables, avatar_url, load_tables, short_name
 from tracker.evaluation import VERDICT_BY_KEY, VERDICTS
-from tracker.field import build_field_figure, build_separation_figure
+from tracker.player import build_player_html, player_height
 
 st.set_page_config(page_title="YAC Potential & QB Decision Tracker", page_icon="🏈", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -30,18 +28,22 @@ QUARTERS = ["Q1", "Q2", "Q3", "Q4", "OT"]
 DOWNS = {"1st": 1, "2nd": 2, "3rd": 3, "4th": 4}
 DISTANCES = {"Courte (≤ 3 yd)": (0, 3), "Moyenne (4–7 yd)": (4, 7), "Longue (≥ 8 yd)": (8, 99)}
 RESULT_FR = {"C": "Complète", "I": "Incomplète", "IN": "Interceptée"}
-SPEEDS = {"0,25×": 0.25, "0,5×": 0.5, "1×": 1.0}
 TABLE_MATCH, TABLE_PLAY = "Match filtré", "Action sélectionnée"
-TICK_SECONDS = 0.1           # période cible du lecteur (10 images/s = temps réel à 1×)
-PLOT_CONFIG = {"displayModeBar": False, "scrollZoom": False, "doubleClick": False}
 
 CSS = """
 <style>
-.block-container {padding-top: 2.4rem; max-width: 1480px;}
-h1 {font-size: 1.85rem !important; padding: 0 0 .1rem 0 !important;}
-.section {font-size: .74rem; letter-spacing: .14em; text-transform: uppercase; color: #8B949E; margin: 1.4rem 0 .45rem;}
+.block-container {padding-top: 2.2rem; max-width: 1480px;}
+h1 {font-size: 1.9rem !important; font-weight: 700 !important; letter-spacing: -.01em; padding: 0 0 .1rem 0 !important;}
+.section {font-size: .72rem; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: #8B949E;
+          margin: 1.8rem 0 .6rem; display: flex; align-items: center; gap: .8rem;}
+.section::after {content: ""; flex: 1; height: 1px; background: #26303D;}
 [data-testid="stMetricValue"] {font-size: 1.6rem;}
 [data-testid="stMetricLabel"] p {font-size: .82rem; color: #8B949E;}
+[data-testid="stMetric"] {background: #121821; border-radius: 12px;}
+[data-testid="stVerticalBlockBorderWrapper"] {border-radius: 14px;}
+[data-testid="stDataFrame"] {border-radius: 12px; overflow: hidden;}
+.verdict {background: #121821; border: 1px solid #26303D; border-radius: 12px; padding: .7rem 1rem; margin-bottom: .8rem;}
+.verdict .who {color: #8B949E; font-size: .85rem;}
 .stAppDeployButton {display: none;}
 </style>
 """
@@ -97,148 +99,57 @@ def play_label(row) -> str:
 
 
 # --------------------------------------------------------------------------- callbacks
-# Position de lecture : `ss.pos` (frameId). Le curseur `ss.frame` n'en est qu'une vue ; pendant la lecture il est
-# remplacé par une barre de progression, si bien que la boucle de lecture ne modifie jamais l'état d'un widget.
-# La lecture n'existe que dans l'exécution déclenchée par le bouton (`start_loop`) : toute autre interaction
-# (filtre, tableau, pause...) relance le script avec `playing = False`.
+# Le lecteur tourne dans le navigateur (tracker/player.py) : Streamlit ne fait que lui indiquer l'image de départ
+# (`ss.pos`, un frameId). Un clic sur le tableau change cette image et fait remonter la page jusqu'au lecteur.
 def _bump_epoch() -> None:
     """Changer d'action via le menu réinitialise la sélection du tableau (évite une ligne surlignée périmée)."""
     st.session_state.table_epoch += 1
 
 
-def _on_slider() -> None:
-    st.session_state.pos = int(st.session_state.frame)
-
-
-def _set_playing(playing: bool, first: int, last: int) -> None:
-    """Idempotent : l'état voulu est fixé au rendu du bouton, pas déduit de l'état courant."""
-    ss = st.session_state
-    if playing and ss.pos >= last:
-        ss.pos = first
-    ss.start_loop = playing
-    ss.play_pos, ss.last_tick = 0.0, time.perf_counter()
-
-
-def _goto(frame: int) -> None:
-    st.session_state.pos = int(frame)
-
-
-def _step(delta: int, first: int, last: int) -> None:
-    st.session_state.pos = int(np.clip(st.session_state.pos + delta, first, last))
-
-
 def _on_table_select(table_key: str) -> None:
-    """Clic sur une ligne du tableau -> la section 2 saute à l'action et à l'image de l'événement."""
+    """Clic sur une ligne du tableau -> le lecteur saute à l'action et à l'image de l'événement, en haut de page."""
     ss = st.session_state
     state = ss.get(table_key)
-    rows = list(state["selection"]["rows"]) if state else []
+    selection = state["selection"] if state else {}
+    rows = list(selection.get("rows", [])) or [cell[0] for cell in selection.get("cells", [])]   # case cochée ou clic
     if not rows or rows[0] >= len(ss.table_targets):
         return
     play_id, frame = ss.table_targets[rows[0]]
     ss.sel_play, ss.pos = play_id, int(frame)
     ss.frame_play = (ss.sel_game, play_id)
+    ss.scroll_count += 1
+    ss.scroll_pending = True
+    ss.table_epoch += 1            # nouvelle clé de tableau : la ligne se désélectionne, un nouveau clic refonctionne
+
+
+SCROLL_JS = """<script>/* {n} */
+setTimeout(function () {{      // laisse le lecteur se recomposer (sa hauteur peut changer) avant de mesurer
+  const doc = window.parent.document;
+  const target = doc.getElementById("player-anchor");
+  if (!target) return;
+  const main = doc.querySelector('[data-testid="stMain"]') || doc.scrollingElement;
+  const top = target.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop - 70;
+  main.scrollTo({{top: Math.max(top, 0), behavior: "smooth"}});
+}}, 350);
+</script>"""
 
 
 # --------------------------------------------------------------------------- (3) UI : visualisation
-class Player:
-    """Section 2 : lecteur temporel, terrain animé et télémétrie.
+@st.cache_data(show_spinner="Préparation du lecteur…", max_entries=24)
+def player_page(game_id: int, play_id: int, start_frame: int) -> tuple[str, int]:
+    a = get_game(game_id).plays[play_id]
+    return build_player_html(a, start_frame), player_height(a)
 
-    Le constructeur crée les contrôles et les emplacements (`st.empty`) à leur place dans la page et dessine
-    l'image courante. `play()` est appelé en toute fin de script, une fois le tableau affiché : il redessine
-    les emplacements à ~10 images/s. Chaque clic de l'utilisateur relance le script, ce qui interrompt la boucle.
-    """
 
-    def __init__(self, a: PlayAnalysis, controls) -> None:
-        ss = st.session_state
-        self.a, self.t = a, a.tracking
-        self.first, self.last = int(a.frames[0]), int(a.frames[-1])
-        ss.pos = int(np.clip(ss.pos, self.first, self.last))
-        ss.frame = ss.pos
-        first, last, t = self.first, self.last, self.t
-
-        with controls:
-            c_play, c_start, c_back, c_next, c_release, c_speed, c_opts = st.columns(
-                [1.5, 0.7, 0.7, 0.7, 1.3, 2.6, 2.2], vertical_alignment="center")
-            c_play.button("⏸ Pause" if ss.playing else "▶ Lecture", key="btn_play", type="primary", width="stretch",
-                          on_click=_set_playing, args=(not ss.playing, first, last))
-            c_start.button("⏮", key="btn_start", help="Revenir à la première image", width="stretch",
-                           on_click=_goto, args=(first,))
-            c_back.button("◀", key="btn_back", help="Image précédente", width="stretch",
-                          on_click=_step, args=(-1, first, last))
-            c_next.button("▶", key="btn_next", help="Image suivante", width="stretch",
-                          on_click=_step, args=(1, first, last))
-            c_release.button("🎯 Lancer", key="btn_release", help="Aller à l'image du lancer", width="stretch",
-                             on_click=_goto, args=(int(t.frames[a.release_idx]),))
-            c_speed.segmented_control("Vitesse", list(SPEEDS), key="speed_label", required=True,
-                                      label_visibility="collapsed")
-            c_opts.toggle("Options du QB", key="show_options",
-                          help="Affiche la séparation de chaque receveur éligible (vert > 3 yd, orange, rouge < 1 yd).")
-            self.timeline = st.empty()
-            if not ss.playing:
-                with self.timeline.container():
-                    st.slider("Image (frameId)", first, last, step=1, key="frame", on_change=_on_slider,
-                              help="Chaque image = 0,1 s de jeu.")
-
-        m, d = a.meta, a.decision
-        st.markdown(f"**{m['quarter']} {m['clock']} · {m['situation']}** · {m['possession']} attaque · "
-                    f"{a.passer_name} → **{a.target_name}** ({a.target_pos})"
-                    f"  \n{d.verdict.badge} — {d.text}")
-
-        left, right = st.columns([5, 4], gap="large")
-        self.field_slot = left.empty()
-        row1, row2 = right.columns(2), right.columns(2)
-        self.kpi = [row1[0].empty(), row1[1].empty(), row2[0].empty(), row2[1].empty()]
-        self.caption_slot = right.empty()
-        self.separation_slot = right.empty()
-        self.draw(ss.pos)
-
-    def draw(self, pos: int) -> None:
-        """Dessine tous les éléments dépendant du temps à l'image `pos` (frameId)."""
-        ss, a = st.session_state, self.a
-        idx = self.t.index_of(pos)
-        prev = max(idx - 1, 0)
-
-        def trend(series):          # variation depuis l'image précédente ; rien si elle est invisible (< 0,05)
-            delta = round(float(series[idx] - series[prev]), 1)
-            return f"{delta:+.1f}" if idx and delta else None
-
-        if ss.playing:
-            self.timeline.progress((pos - self.first) / max(self.last - self.first, 1),
-                                   text=f"Image {pos} / {self.last} · {a.time_at(idx):+.1f} s depuis le snap")
-        self.field_slot.plotly_chart(build_field_figure(a, idx, ss.show_options), config=PLOT_CONFIG, theme=None,
-                                     width="stretch")
-        self.kpi[0].metric("Séparation actuelle", f"{a.sep[idx]:.1f} yd", trend(a.sep), border=True, height=118,
-                           help="Distance au défenseur le plus proche (distance euclidienne).")
-        self.kpi[1].metric("Vitesse du receveur", f"{a.speed[idx]:.1f} yd/s", trend(a.speed), delta_color="off",
-                           border=True, height=118)
-        self.kpi[2].metric("Phase de jeu", a.phase_at(idx), border=True, height=118, help=a.phase_detail(idx))
-        self.kpi[3].metric("YAC Potential", f"{a.yac[idx]:.1f} yd", trend(a.yac), border=True, height=118,
-                           help="Yards qu'on peut espérer gagner après la réception (séparation, espace devant, vitesse).")
-        self.caption_slot.caption(f"Image {int(a.frames[idx])} / {self.last} · {a.time_at(idx):+.1f} s depuis le snap"
-                                  f" · {a.phase_detail(idx)}")
-        self.separation_slot.plotly_chart(build_separation_figure(a, idx), config=PLOT_CONFIG, theme=None,
-                                          width="stretch")
-
-    def play(self) -> None:
-        """Lecture : image suivante au rythme réel du tracking (10 images/s), quelle que soit la latence."""
-        ss = st.session_state
-        if not ss.playing:
-            return
-        drawn = self.t.index_of(ss.pos)
-        while ss.playing:
-            time.sleep(max(0.0, TICK_SECONDS - (time.perf_counter() - ss.last_tick)))
-            now = time.perf_counter()
-            ss.play_pos += (now - ss.last_tick) * C.TRACKING_FPS * SPEEDS[ss.speed_label]
-            ss.last_tick = now
-            step = int(ss.play_pos)
-            ss.play_pos -= step
-            ss.pos = min(self.last, ss.pos + step)
-            if ss.pos >= self.last:
-                ss.playing = False
-            if self.t.index_of(ss.pos) != drawn:    # Streamlit refuse deux graphiques identiques dans un même run
-                drawn = self.t.index_of(ss.pos)
-                self.draw(ss.pos)
-        st.rerun()                  # fin de lecture : on redessine les contrôles (bouton "Lecture", curseur)
+def render_player(a: PlayAnalysis, game_id: int) -> None:
+    """Section 2 : lecteur animé (navigateur) précédé du résumé de la décision."""
+    ss = st.session_state
+    m, d = a.meta, a.decision
+    st.markdown(f"""<div class="verdict"><div class="who">{m['quarter']} {m['clock']} · {m['situation']} · {m['possession']} attaque
+ · {a.passer_name} → <b>{a.target_name}</b> ({a.target_pos})</div>
+<div style="margin-top:.15rem">{d.verdict.badge} — {d.text}</div></div>""", unsafe_allow_html=True)
+    page, height = player_page(game_id, a.tracking.play_id, int(ss.pos))
+    st.iframe(page, height=height)
 
 
 # --------------------------------------------------------------------------- (3) UI : analyse décisionnelle
@@ -298,10 +209,10 @@ def render_decisions(tables: Tables, plays: pd.DataFrame, game: GameAnalysis, a:
     ss.table_targets = targets
 
     key = f"decisions_{ss.table_epoch}_{mode}_{ss.sel_game}_{hash(scope)}"
-    st.caption("Cliquez sur une ligne : la visualisation saute à l'action et à l'image exacte de l'événement.")
+    st.caption("Cliquez sur un moment : la visualisation saute à l'action et à l'image exacte de l'événement.")
     st.dataframe(
         table.style.map(style_verdict, subset=["Évaluation"]),
-        key=key, on_select=partial(_on_table_select, key), selection_mode="single-row",
+        key=key, on_select=partial(_on_table_select, key), selection_mode=["single-row", "single-cell"],
         hide_index=True, row_height=40, height=min(40 * (len(table) + 1) + 3, 440),
         column_config={
             "Moment": st.column_config.TextColumn("Moment", width=100),
@@ -339,8 +250,8 @@ mesuré, il est estimé. Détails : `README.md`.
 
 # --------------------------------------------------------------------------- (3) UI : page
 def init_state() -> None:
-    defaults = {"playing": False, "speed_label": "0,5×", "show_options": True, "table_mode": TABLE_MATCH,
-                "table_epoch": 0, "play_pos": 0.0, "last_tick": 0.0, "pos": 1, "frame": 1, "table_targets": []}
+    defaults = {"table_mode": TABLE_MATCH, "table_epoch": 0, "pos": 1, "table_targets": [], "scroll_count": 0,
+                "scroll_pending": False}
     for name in FILTERS:
         defaults[f"f_{name}"] = ALL
     for key, value in defaults.items():
@@ -348,7 +259,7 @@ def init_state() -> None:
 
 
 def render_menu(tables: Tables):
-    """Section 1 : sélecteurs. Retourne (conteneur du menu, analyse du match, passes filtrées, action choisie)."""
+    """Section 1 : sélecteurs. Retourne (analyse du match, passes filtrées, action choisie)."""
     ss = st.session_state
     st.markdown('<div class="section">1 · Menu &amp; contrôles</div>', unsafe_allow_html=True)
     menu = st.container(border=True)
@@ -359,7 +270,7 @@ def render_menu(tables: Tables):
         if ss.get("_game") != game_id:                      # nouveau match : on repart de zéro
             for name in FILTERS:
                 ss[f"f_{name}"] = ALL
-            ss.update(_game=game_id, playing=False, sel_play=None, table_epoch=ss.table_epoch + 1)
+            ss.update(_game=game_id, sel_play=None, table_epoch=ss.table_epoch + 1)
         game = get_game(int(game_id))
         if game.summary.empty:
             st.warning("Aucune passe analysable dans ce match.")
@@ -389,7 +300,7 @@ def render_menu(tables: Tables):
         labels = {int(r.playId): play_label(r) for r in plays.itertuples()}
         st.selectbox(f"Action ({len(play_ids)} passe{'s' if len(play_ids) > 1 else ''})", play_ids,
                      format_func=labels.get, key="sel_play", on_change=_bump_epoch)
-    return menu, game, plays, game.plays[int(ss.sel_play)]
+    return game, plays, game.plays[int(ss.sel_play)]
 
 
 def main() -> None:
@@ -405,18 +316,17 @@ def main() -> None:
 
     init_state()
     ss = st.session_state
-    ss.playing = bool(ss.pop("start_loop", False))   # la lecture ne survit qu'à l'exécution lancée par le bouton
-    menu, game, plays, a = render_menu(tables)
+    game, plays, a = render_menu(tables)
 
     if ss.get("frame_play") != (ss.sel_game, a.tracking.play_id):   # nouvelle action : retour à la première image
         ss.pos = int(a.frames[0])
         ss.frame_play = (ss.sel_game, a.tracking.play_id)
 
-    st.markdown('<div class="section">2 · Visualisation</div>', unsafe_allow_html=True)
-    player = Player(a, menu)
-
+    st.markdown('<div class="section" id="player-anchor">2 · Visualisation</div>', unsafe_allow_html=True)
+    render_player(a, int(ss.sel_game))
     render_decisions(tables, plays, game, a)
-    player.play()                   # en dernier : la boucle de lecture ne bloque pas l'affichage du tableau
+    if ss.pop("scroll_pending", False):                 # clic sur le tableau : on remonte jusqu'au lecteur
+        st.html(SCROLL_JS.format(n=ss.scroll_count), unsafe_allow_javascript=True)
 
 
 main()

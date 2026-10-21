@@ -33,11 +33,8 @@ def test_app_renders_the_three_sections(app):
     labels = [s.label for s in app.selectbox]
     assert labels[:6] == ["Match", "Quart-temps", "Down", "Distance", "Passeur", "Receveur"]
     assert labels[6].startswith("Action")
-    metrics = {m.label: m.value for m in app.metric}
-    assert {"Séparation actuelle", "Vitesse du receveur", "Phase de jeu", "YAC Potential"} <= set(metrics)
-    assert sum(1 for label in metrics if label.endswith(("!!", "?", "??")) or label.endswith("Bon coup")) == 4
-    assert [b.label for b in app.button][:5] == ["▶ Lecture", "⏮", "◀", "▶", "🎯 Lancer"]
-    assert len(app.slider) == 1 and len(app.dataframe) == 1
+    assert sum(1 for m in app.metric if m.label.endswith(("!!", "?", "??")) or m.label.endswith("Bon coup")) == 4
+    assert len(app.dataframe) == 1 and len(app.get("iframe")) == 1           # tableau + lecteur animé (navigateur)
 
 
 def test_filters_narrow_the_action_list_and_cascade(app):
@@ -52,32 +49,15 @@ def test_filters_narrow_the_action_list_and_cascade(app):
 
 
 def test_changing_the_action_goes_back_to_the_first_frame(app):
-    app.button(key="btn_release").click().run()                     # on s'éloigne de la première image
     other_play = app.session_state["table_targets"][3][0]            # (playId, image du lancer) de la 4e passe
+    app.session_state["pos"] = app.session_state["table_targets"][3][1]
     app.session_state["sel_play"] = other_play
     app.run()
     assert not app.exception
-    assert app.session_state["pos"] == app.slider(key="frame").min
-
-
-def test_stepping_and_jumping(app):
-    first = app.slider(key="frame").value
-    app.button(key="btn_next").click().run()
-    assert app.slider(key="frame").value == first + 1
-    app.button(key="btn_release").click().run()
-    assert app.slider(key="frame").value > first + 20
-    app.button(key="btn_start").click().run()
-    assert app.slider(key="frame").value == first
-
-
-def test_playback_runs_to_the_last_frame_then_stops(app):
-    app.session_state["speed_label"] = "1×"
-    app.button(key="btn_release").click().run()                # on part du lancer : lecture courte
-    app.button(key="btn_play").click().run()
-    assert not app.exception
-    assert app.session_state["playing"] is False
-    assert app.slider(key="frame").value == app.slider(key="frame").max
-    assert app.button(key="btn_play").label == "▶ Lecture"
+    first = app.session_state["table_targets"][0][1]
+    app.session_state["sel_play"] = app.session_state["table_targets"][0][0]
+    app.run()
+    assert app.session_state["pos"] < first
 
 
 def test_table_can_switch_to_the_events_of_the_selected_action(app):

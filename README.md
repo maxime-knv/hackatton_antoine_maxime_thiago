@@ -26,9 +26,9 @@ streamlit run app.py                                  # → http://localhost:850
 
 | Section | Ce qu'on y fait |
 |---|---|
-| **1 · Menu & contrôles** | Choisir match, quart-temps, down, distance, passeur, receveur, puis l'action. ▶ Lecture / ⏸ Pause, ◀ ▶ image par image, 🎯 saut au lancer, vitesse ×0,25 / ×0,5 / ×1, curseur sur le `frameId`. |
+| **1 · Menu & contrôles** | Choisir match, quart-temps, down, distance, passeur, receveur, puis l'action. Lecteur fluide animé dans le navigateur : ▶ Lecture / ⏸ Pause (espace), ◀ ▶ image par image (flèches), 🎯 saut au lancer, vitesse ×0,25 / ×0,5 / ×1, curseur sur le `frameId`. |
 | **2 · Visualisation** | À gauche le terrain (attaque 🔵, défense 🟠, receveur ciblé 🟡, ballon 🟤, trajectoires, lien pointillé vers le défenseur le plus proche). À droite la télémétrie : séparation, vitesse, phase de jeu, YAC Potential et courbe de séparation avec barre verticale à l'instant présent. « Options du QB » affiche la séparation de chaque receveur éligible. |
-| **3 · Analyse décisionnelle** | Une ligne par passe (ou, en vue « Action sélectionnée », par moment clé). **Un clic sur une ligne recharge la section 2 à l'image exacte.** |
+| **3 · Analyse décisionnelle** | Une ligne par passe (ou, en vue « Action sélectionnée », par moment clé). **Un clic sur un moment remonte au lecteur et le place à l'image exacte.** |
 
 ## 🧮 Les métriques, en clair
 
